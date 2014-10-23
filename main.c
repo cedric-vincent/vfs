@@ -1,53 +1,121 @@
 #include <dirent.h>	/* DT_*, */
-#include <stdio.h>	/* stdout, */
-#include "node.h"
-#include "path.h"
+#include <stdio.h>	/* *printf(3), stdout, */
+#include <errno.h>	/* ENOMEM, */
+#include <fcntl.h>	/* O_NOFOLLOW, */
+#include <talloc.h>
+#include <uthash.h>
+#include "vfs/node.h"
+#include "vfs/path.h"
+#include "vfs/symlink.h"
+#include "vfs/children.h"
+#include "vfs/find.h"
+#include "vfs/tree.h"
+
+static int dive_into_tree(Node *node)
+{
+	Node *child;
+	int status;
+
+	if (get_path(node, ACTUAL_PATH) == NULL)
+		return -ENOMEM;
+
+	if (get_path(node, VIRTUAL_PATH) == NULL)
+		return -ENOMEM;
+
+	if (node->type == DT_LNK) {
+		if (get_symlink(node, &status) == NULL)
+			return status;
+	}
+
+	if (node->type != DT_DIR)
+		return 0;
+
+	if (!node->children_filled) {
+		status = fill_children(node);
+		if (status < 0)
+			return status;
+	}
+
+	for (child = node->children; child != NULL; child = child->hh.next) {
+		status = dive_into_tree(child);
+		if (status < 0) {
+			fprintf(stderr, "can't dive into: %s (actually %s)\n",
+				get_path(child, VIRTUAL_PATH),
+				get_path(child, ACTUAL_PATH));
+			return status;
+		}
+	}
+
+	return 0;
+}
 
 int main(void)
 {
+	const char *new_root = "/usr/local/cedric/rootfs/slackware-8.1";
 	Node *root;
 	Node *node;
 	Node *node2;
+	int error;
 
-	const char *path_ = "///etc///..///fstab/////.";
-	const char *path2_ = "etc///..///fstab/////.";
-	Path *path;
+	talloc_enable_leak_report_full();
 
-	root = new_node(NULL, "/", DT_DIR);
+	root = new_node(NULL, "/", -1, DT_DIR);
 	if (root == NULL)
 		exit(EXIT_FAILURE);
 
-	node = add_new_child(root, "etc", DT_DIR);
-	if (node == NULL)
-		exit(EXIT_FAILURE);
+	node  = find_node(root, root, "/usr/tmp", O_NOFOLLOW, &error);
+	node2 = find_node(root, root, "/usr/tmp", 0, &error);
 
-	node2 = add_new_child(node, "fstab", DT_REG);
-	if (node2 == NULL)
-		exit(EXIT_FAILURE);
+	printf("actual  /usr/tmp: %s -> %s\n",
+		get_path(node, ACTUAL_PATH), get_path(node2, ACTUAL_PATH));
+	printf("virtual /usr/tmp: %s -> %s\n\n",
+		get_path(node, VIRTUAL_PATH), get_path(node2, VIRTUAL_PATH));
 
-	node2->purpose = CACHE;
+	printf("*** changing rootfs to %s\n\n", new_root);
 
-	node2 = add_new_child(node, "inittab", DT_REG);
-	if (node2 == NULL)
-		exit(EXIT_FAILURE);
+	set_actual_path(root, new_root);
+
+	node  = find_node(root, root, "/usr/tmp", O_NOFOLLOW, &error);
+	node2 = find_node(root, root, "/usr/tmp", 0, &error);
+
+	printf("actual  /usr/tmp: %s -> %s\n",
+		get_path(node, ACTUAL_PATH), get_path(node2, ACTUAL_PATH));
+	printf("virtual /usr/tmp: %s -> %s\n\n",
+		get_path(node, VIRTUAL_PATH), get_path(node2, VIRTUAL_PATH));
+
+	node = find_node(root, root, "/usr", 0, &error);
+
+	(void) dive_into_tree(root);
+
+	flush_children(root, true);
 
 	print_tree(root, stdout);
 
-	flush_subtree_cache(root, true);
+	printf("\n*** binding actual /bin over virtual /usr\n\n");
 
-	print_tree(root, stdout);
+	node = find_node(root, root, "/usr", 0, &error);
+	set_actual_path(node, "/bin");
 
-	path = new_path(NULL, path_);
-	if (path == NULL)
-		exit(EXIT_FAILURE);
+	node = find_node(root, root, "/usr/tmp", O_NOFOLLOW, &error);
 
-	printf(">>> '%s' -> '%s'\n", path_, stringify_path(NULL, path, NULL));
+	printf("actual  /usr/tmp: %s\n", node != NULL
+		? get_path(node, ACTUAL_PATH)
+		: strerror(-error));
+	printf("virtual /usr/tmp: %s\n\n", node != NULL
+		? get_path(node, VIRTUAL_PATH)
+		: strerror(-error));
 
-	path = new_path(NULL, path2_);
-	if (path == NULL)
-		exit(EXIT_FAILURE);
+	node = find_node(root, root, "/var/tmp", O_NOFOLLOW, &error);
 
-	printf(">>> '%s' -> '%s'\n", path2_, stringify_path(NULL, path, NULL));
+	printf("actual  /var/tmp: %s\n", get_path(node, ACTUAL_PATH));
+	printf("virtual /var/tmp: %s\n\n", get_path(node, VIRTUAL_PATH));
+
+	node = find_node(root, root, "/usr/true", O_NOFOLLOW, &error);
+
+	printf("actual  /usr/true: %s\n", get_path(node, ACTUAL_PATH));
+	printf("virtual /usr/true: %s\n\n", get_path(node, VIRTUAL_PATH));
+
+	delete_tree(root);
 
 	exit(EXIT_SUCCESS);
 }

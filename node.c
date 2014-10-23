@@ -20,148 +20,26 @@
  * 02110-1301 USA.
  */
 
-#include <dirent.h>	/* DT_, */
-#include <stdio.h>	/* *printf(3), */
-#include <stdbool.h>	/* bool, */
+#include <string.h>	/* strlen(3), */
 #include <talloc.h>
 #include <uthash.h>
-#include "node.h"
+#include "vfs/node.h"
 
 /**
- * See print_tree().
+ * Add @child to @node's children list, and set @child's parent to
+ * @node.
  */
-static void print_tree2(const Node *node, FILE *file, size_t depth)
+static void add_child(Node *node, Node *child)
 {
-	Node *child;
-	size_t i;
-
-	for (i = 0; i < depth; i++)
-		fprintf(file, " ");
-
-	fprintf(file, "%s [purpose: ", node->name);
-
-	switch(node->purpose) {
-	case BINDING:
-		fprintf(file, "binding (%s)", node->value);
-		break;
-	case FILLER:
-		fprintf(file, "filler");
-		break;
-	case CACHE:
-		fprintf(file, "cache");
-		break;
-	default:
-		fprintf(file, "unknown (%x)", node->purpose);
-		break;
-	}
-
-	fprintf(file, "; visibility: ");
-
-	switch(node->purpose) {
-	case DEFAULT:
-		fprintf(file, "default");
-		break;
-	case ADDED:
-		fprintf(file, "added");
-		break;
-	case REMOVED:
-		fprintf(file, "removed");
-		break;
-	default:
-		fprintf(file, "unknown (%x)", node->purpose);
-		break;
-	}
-
-	fprintf(file, "; type: ");
-
-	switch (node->type) {
-	case DT_REG:
-		fprintf(file, "regular");
-		break;
-	case DT_DIR:
-		fprintf(file, "directory");
-		break;
-	case DT_LNK:
-		fprintf(file, "symlink");
-		break;
-	case DT_BLK:
-		fprintf(file, "block dev.");
-		break;
-	case DT_CHR:
-		fprintf(file, "char. dev.");
-		break;
-	case DT_FIFO:
-		fprintf(file, "fifo");
-		break;
-	case DT_SOCK:
-		fprintf(file, "socket");
-		break;
-	default:
-		fprintf(file, "unknown (%x)", node->type);
-		break;
-	}
-
-	if (node->evaluator != NULL)
-		fprintf(file, "; lazy evaluated");
-
-	fprintf(file, "]\n");
-
-	for (child = node->children; child != NULL; child = child->hh.next)
-		print_tree2(child, file, depth + 1);
+	HASH_ADD_KEYPTR(hh, node->children, child->name, talloc_get_size(child->name) - 1, child);
+	child->parent = node;
 }
 
 /**
- * Print @node's tree in @file.
+ * Allocate for @context a new node with given @name and @type.  This
+ * function returns NULL if there's not enough memory.
  */
-void print_tree(const Node *node, FILE *file)
-{
-	print_tree2(node, file, 0);
-}
-
-/**
- * Remove and free cache nodes from @node's subtree.  Note that @node
- * is *not* flushed.  If @show_size is true, @node's subtree size is
- * printed on stderr.  This function returns number of detected
- * anomalies in @node's subtree.
- */
-size_t flush_subtree_cache(Node *node, bool show_size)
-{
-	size_t anomalies = 0;
-	size_t total_size;
- 	Node *child;
-	Node *tmp;
-
-	if (show_size)
-		total_size = talloc_total_size(node);
-
-	HASH_ITER(hh, node->children, child, tmp) {
-		flush_subtree_cache(child, false);
-
-		if (child->purpose == CACHE) {
-			/* Cache nodes' children should be cache nodes
-			 * too, thus they should all be flushed.  */
-			if (child->children != NULL)
-				anomalies++;
-
-			HASH_DELETE(hh, node->children, child);
-			TALLOC_FREE(child);
-		}
-	}
-
-	if (show_size) {
-		fprintf(stderr, "size before cache flush: %zd\n", total_size);
-		fprintf(stderr, "size after cache flush:  %zd\n", node != NULL
-			? talloc_total_size(node) : 0);
-	}
-
-	return anomalies;
-}
-
-/**
- * Allocate a new node with given @name and @type.  This function
- * returns NULL if there's not enough memory.
- */
-Node *new_node(TALLOC_CTX *context, const char *name, int type)
+Node *new_node(TALLOC_CTX *context, const char *name, ssize_t length, int type)
 {
 	Node *node;
 
@@ -169,25 +47,31 @@ Node *new_node(TALLOC_CTX *context, const char *name, int type)
 	if (node == NULL)
 		return NULL;
 
-	node->name = talloc_strdup(node, name);
+	if (length < 0)
+		length = strlen(name);
+
+	node->name = talloc_strndup(node, name, length);
 	if (node->name == NULL)
 		return NULL;
 
-	node->type = type;
+	talloc_set_name_const(node->name, "$name");
+
+	node->type   = type;
+	node->parent = node;
 
 	return node;
 }
 
 /**
  * Allocate a new node with given @name and @type, then add it to
- * @node's set of children.  This function returns NULL if there's not
- * enough memory.
+ * @node's children list, and set its parent to @node.  This function
+ * returns NULL if there's not enough memory.
  */
-Node *add_new_child(Node *node, const char *name, int type)
+Node *add_new_child(Node *node, const char *name, ssize_t length, int type)
 {
 	Node *child;
 
-	child = new_node(node, name, type);
+	child = new_node(node, name, length, type);
 	if (child == NULL)
 		return NULL;
 

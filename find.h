@@ -20,18 +20,17 @@
  * 02110-1301 USA.
  */
 
-#ifndef PROOT_VFS_PATH
-#define PROOT_VFS_PATH
+#ifndef PROOT_VFS_FIND
+#define PROOT_VFS_FIND
 
 #include "vfs/node.h"
 
-typedef enum {
-	ACTUAL_PATH,
-	VIRTUAL_PATH,
-} PathClass;
+extern Node *find_node_(Node *root, Node *from, const char *path, int flags,
+			int *error, size_t symlink_count);
 
-extern const char *get_path(Node *node, PathClass class);
-extern void flush_path(Node *node, PathClass class);
-extern int set_actual_path(Node *node, const char *path);
+static inline Node *find_node(Node *root, Node *from, const char *path,	int flags, int *error)
+{
+	return find_node_(root, from, path, flags, error, 0);
+}
 
-#endif /* PROOT_VFS_PATH */
+#endif /* PROOT_VFS_FIND */

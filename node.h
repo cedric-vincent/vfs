@@ -24,63 +24,64 @@
 #define PROOT_VFS_NODE
 
 #include <stdbool.h>	/* bool, */
-
-#include <talloc.h>
-#include <uthash.h>
-
-typedef enum {
-	ERROR = 0,	/* missing initialization.  */
-	BINDING,	/* remap a host path over a guest path.  */
-	FILLER,		/* fill gap between a guest leaf and a binding leaf.  */
-	CACHE,		/* remember translation result.  */
-} NodePurpose;
-
-typedef enum {
-	DEFAULT = 0,	/* Trust the actual file-system.  */
-	ADDED,		/* Add to parent's dentries.  */
-	REMOVED,	/* Hide from parent's dentries.  */
-} NodeVisibility;
-
-struct node;
-
-/* Resolve a virtual node, as in /proc.  */
-typedef int (* NodeEvaluator)(struct node *node);
+#include <talloc.h>	/* TALLOC_CTX, */
+#include <uthash.h>	/* UT_hash_handle, */
 
 typedef struct node
 {
+	/**********************************************************************
+	 * General info.: shouldn't be written outside vfs/                   *
+	 **********************************************************************/
+
 	/* Short name of this node.  */
 	const char *name;
 
-	/* Avoid several calls to stat(2).  */
+	/* Node type, as in linux_dirent->d_type.  */
 	int type;
 
-	/* Either avoid several calls to readlink(2), or used for
-	 * binding purpose.  */
-	const char *value;
+	/* A node is part of a tree.  */
+	struct node *parent;
+	struct node *children;
 
-	/* See type definitions above.  */
-	NodePurpose purpose;
-	NodeVisibility visibility;
-	NodeEvaluator evaluator;
+
+	/**********************************************************************
+	 * General info.: can be written outside vfs/, with care.             *
+	 **********************************************************************/
+
+	/* Nodes explicitly modified by user need special care: for
+	 * instance they should not be flushed, ... */
+	bool special;
+
+	/* Resolve a virtual node, as in /proc.  */
+	int (* evaluator)(struct node *node);
+
+
+	/**********************************************************************
+	 * State info.: shouldn't be read or written outside vfs/             *
+	 **********************************************************************/
+
+	/* Whether "regular" children were created.  */
+	bool children_filled;
 
 	/* Make this structure hashable, key is self->name.  */
 	UT_hash_handle hh;
 
-	/* A node is part of a tree.  */
-	struct node *children;
+
+	/**********************************************************************
+	 * Lazily evaluated info., have to read or written through accessors. *
+	 **********************************************************************/
+
+	/* Canonicalized paths.  */
+	struct {
+		char *actual;
+		char *virtual;
+	} path_;
+
+	/* Symbolic link content, when self->type == DT_LNK.  */
+	char *symlink_;
 } Node;
 
-extern Node *new_node(TALLOC_CTX *context, const char *name, int type);
-extern Node *add_new_child(Node *node, const char *name, int type);
-extern size_t flush_subtree_cache(Node *node, bool show_size);
-extern void print_tree(const Node *node, FILE *file);
-
-/**
- * Add @child to @node's set of children.
- */
-static inline void add_child(Node *node, Node *child)
-{
-	HASH_ADD_KEYPTR(hh, node->children, child->name, talloc_get_size(child->name), child);
-}
+extern Node *new_node(TALLOC_CTX *context, const char *name, ssize_t length, int type);
+extern Node *add_new_child(Node *node, const char *name, ssize_t length, int type);
 
 #endif /* PROOT_VFS_NODE */

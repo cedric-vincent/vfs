@@ -20,122 +20,154 @@
  * 02110-1301 USA.
  */
 
-#include <string.h>	/* str*(3), */
-#include <assert.h>	/* assert(3), */
+#include <string.h>	/* strc*(), */
+#include <assert.h>	/* assert(0), */
+#include <errno.h>	/* ENOMEM, */
 #include <talloc.h>
-#include "path.h"
+#include "vfs/path.h"
+#include "vfs/node.h"
+#include "vfs/children.h"
 
 /**
- * Allocate a new component with given @name, with specified @length,
- * then push it into @path.  This function returns NULL if there's not
- * enough memory.
+ * Allocate for @context a new @class path built from @node.  This
+ * function returns NULL if there's not enough memory.
  */
-Component *push_new_component(Path *path, const char *name, size_t length)
+static char *new_path_from_node(TALLOC_CTX *context, const Node *node, PathClass class)
 {
-	Component *component;
+	char *path = NULL;
+	size_t size;
 
-	component = talloc_zero(path, Component);
-	if (component == NULL)
-		return NULL;
+	size = 0;
+	while (1) {
+		char *old_path = path;
+		const char *prefix;
 
-	component->name = talloc_strndup(component, name, length);
-	if (component->name == NULL)
-		return NULL;
+		switch (class) {
+		case ACTUAL_PATH:
+			prefix = node->path_.actual ?: node->name;
+			break;
 
-	push_component(path, component);
+		case VIRTUAL_PATH:
+			prefix = node->path_.virtual ?: node->name;
+			break;
 
-	return component;
-}
+		default:
+			assert(0);
+		}
 
-/**
- * Convert @path_ into a tailq structure.  This function returns NULL
- * if there's not enough memory.
- */
-Path *new_path(TALLOC_CTX *context, const char *path_)
-{
-	Component *component;
-	Path *path;
+		size += talloc_get_size(prefix);
 
-	const char *cursor;
-	size_t length;
-
-	path = talloc_zero(context, Path);
-	if (path == NULL)
-		return NULL;
-
-	TAILQ_INIT(path);
-
-	if (path_[0] == '/') {
-		component = push_new_component(path, "/", 2);
-		if (component == NULL)
+		path = talloc_size(context, size);
+		if (path == NULL) {
+			TALLOC_FREE(old_path);
 			return NULL;
+		}
+
+		strcpy(path, prefix);
+
+		if (old_path != NULL) {
+			if (strcmp(prefix, "/") != 0)
+				strcat(path, "/");
+			strcat(path, old_path);
+			TALLOC_FREE(old_path);
+		}
+
+		if (prefix != node->name || node->parent == node)
+			break;
+
+		node = node->parent;
 	}
 
-	for (cursor = path_; cursor[0] != '\0'; cursor += length) {
-		length = strcspn(cursor, "/");
-		if (length == 0)
-			goto skip_slash;
-
-		component = push_new_component(path, cursor, length);
-		if (component == NULL)
-			return NULL;
-
-	skip_slash:
-		length += strspn(cursor, "/");
-	}
+	talloc_set_name_const(path, path);
 
 	return path;
 }
 
 /**
- * Convert @path -- upto @last component -- into a C string.  This
- * function returns NULL if there's not enough memory.
+ * Get @node->path_.@class, however this function is similar to
+ * new_path_from_node(@node, @node, @class) if it was not computed
+ * yet.
  */
-char *stringify_path(TALLOC_CTX *context, const Path *path, const Component *last)
+const char *get_path(Node *node, PathClass class)
 {
-	const Component *component;
-	size_t offset;
-	size_t size;
-	char *path_;
+	switch (class) {
+	case ACTUAL_PATH:
+		if (node->path_.actual != NULL)
+			return node->path_.actual;
 
-	/* Pre-compute size of the path.  */
-	size = 0;
-	TAILQ_FOREACH(component, path, link) {
-		size += talloc_get_size(component->name);
+		node->path_.actual = new_path_from_node(node, node, class);
+		if (node->path_.actual == NULL)
+			return NULL;
 
-		if (component == last)
-			break;
+		talloc_set_name_const(node->path_.actual, "$path.actual");
+
+		return node->path_.actual;
+
+	case VIRTUAL_PATH:
+		if (node->path_.virtual != NULL)
+			return node->path_.virtual;
+
+		node->path_.virtual = new_path_from_node(node, node, class);
+		if (node->path_.virtual == NULL)
+			return NULL;
+
+		talloc_set_name_const(node->path_.virtual, "$path.virtual");
+
+		return node->path_.virtual;
+
+	default:
+		assert(0);
+	}
+}
+
+/**
+ * Delete @node->path_.@class if @node is not special, then perform
+ * recursively the same for @node's children.
+ */
+void flush_path(Node *node, PathClass class)
+{
+	Node *child;
+
+	switch (class) {
+	case ACTUAL_PATH:
+		if (!node->special)
+			TALLOC_FREE(node->path_.actual);
+		break;
+
+	case VIRTUAL_PATH:
+		TALLOC_FREE(node->path_.virtual);
+		break;
+
+	default:
+		assert(0);
 	}
 
-	path_ = talloc_size(context, size);
-	if (path_ == NULL)
-		return NULL;
+	/* No child deletion, so no need for HASH_ITER.  */
+	for (child = node->children; child != NULL; child = child->hh.next)
+		flush_path(child, class);
+}
 
-	/* Concatene names of components, separated by '/'.  */
-	offset = 0;
-	TAILQ_FOREACH(component, path, link) {
-		size_t length;
+/**
+ * Flush everything that depends on @node->path_.actual, then mark
+ * @node as special and set @node->path_.actual to a copy of @path.
+ * There is no set_virtual_path() since it makes no sense to force the
+ * value of @node->path_.virtual.  This function returns -errno if an
+ * error occurred, otherwise 0.
+ */
+int set_actual_path(Node *node, const char *path)
+{
+	char *copy_path;
 
-		if (strcmp(component->name, "/") != 0) {
-			length = talloc_get_size(component->name) - 1;
-			memcpy(path_ + offset, component->name, length);
-		}
-		else {
-			assert(offset == 0);
-			length = 0;
-		}
+	copy_path = talloc_strdup(node, path);
+	if (copy_path == NULL)
+		return -ENOMEM;
 
-		path_[offset + length] = '/';
+	flush_children(node, false);
 
-		offset += length + 1;
+	flush_path(node, ACTUAL_PATH);
 
-		if (component == last)
-			break;
-	}
+	node->path_.actual = copy_path;
+	node->special = true;
 
-	/* Replace trailing '/' with a terminating null byte.  */
-	if (offset > 1)
-		path_[offset - 1] = '\0';
-
-	return path_;
+	return 0;
 }

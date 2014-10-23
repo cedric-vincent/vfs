@@ -20,18 +20,11 @@
  * 02110-1301 USA.
  */
 
-#ifndef PROOT_VFS_PATH
-#define PROOT_VFS_PATH
+#ifndef PROOT_VFS_SYMLINK
+#define PROOT_VFS_SYMLINK
 
 #include "vfs/node.h"
 
-typedef enum {
-	ACTUAL_PATH,
-	VIRTUAL_PATH,
-} PathClass;
+extern const char *get_symlink(Node *node, int *error);
 
-extern const char *get_path(Node *node, PathClass class);
-extern void flush_path(Node *node, PathClass class);
-extern int set_actual_path(Node *node, const char *path);
-
-#endif /* PROOT_VFS_PATH */
+#endif /* PROOT_VFS_SYMLINK */
