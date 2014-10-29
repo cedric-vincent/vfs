@@ -53,7 +53,7 @@ typedef struct node
 	bool special;
 
 	/* Resolve a virtual node, as in /proc.  */
-	int (* evaluator)(struct node *node);
+	int (* evaluator)(struct node *node, int flags, bool is_final);
 
 
 	/**********************************************************************
