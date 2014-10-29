@@ -69,7 +69,7 @@ int fill_children(Node *parent)
 		    || strcmp(entry->d_name, "..") == 0)
 			continue;
 
-		HASH_FIND(hh, parent->children, entry->d_name, strlen(entry->d_name), child);
+		HASH_FIND_STR(parent->children, entry->d_name, child);
 		if (child != NULL) {
 			if (!child->special)
 				fprintf(stderr, "Entry '%s' aldready filled in '%s'\n",
@@ -118,7 +118,7 @@ size_t flush_children(Node *parent, bool show_size)
 		if (reference_count > 1 || child->special)
 			continue;
 
-		HASH_DELETE(hh, parent->children, child);
+		HASH_DEL(parent->children, child);
 		TALLOC_FREE(child);
 
 		nb_flushed_nodes++;

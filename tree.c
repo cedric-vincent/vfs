@@ -89,7 +89,7 @@ static ssize_t delete_children(Node *parent)
 		if (reference_count > 1)
 			return -EBUSY;
 
-		HASH_DELETE(hh, parent->children, child);
+		HASH_DEL(parent->children, child);
 		TALLOC_FREE(child);
 
 		nb_deleted_nodes++;
